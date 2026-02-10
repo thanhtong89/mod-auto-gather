@@ -1,0 +1,76 @@
+#
+# mod-auto-gather configuration
+#
+# Auto-shows mining/herb nodes on minimap and auto-gathers when in range.
+#
+
+###############################################################################
+# GENERAL SETTINGS
+###############################################################################
+
+#
+#   AutoGather.Enable
+#       Enable the module.
+#       Default: 1 (enabled)
+#
+AutoGather.Enable = 1
+
+#
+#   AutoGather.Announce
+#       Announce module to players on login.
+#       Default: 1 (enabled)
+#
+AutoGather.Announce = 1
+
+###############################################################################
+# TRACKING SETTINGS
+###############################################################################
+
+#
+#   AutoGather.AutoTrack
+#       Force minimap tracking flags for gathering professions.
+#       Sets PLAYER_TRACK_RESOURCES bits directly, allowing multiple
+#       resource types to show simultaneously alongside other tracking.
+#       Default: 1 (enabled)
+#
+AutoGather.AutoTrack = 1
+
+###############################################################################
+# AUTO-LOOT SETTINGS
+###############################################################################
+
+#
+#   AutoGather.AutoLoot
+#       Automatically gather nodes when within range.
+#       Loot goes directly to bags, no loot window.
+#       Default: 1 (enabled)
+#
+AutoGather.AutoLoot = 1
+
+#
+#   AutoGather.LootRange
+#       Range in yards to auto-gather nodes.
+#       Default: 10.0
+#
+AutoGather.LootRange = 10.0
+
+#
+#   AutoGather.ScanIntervalMs
+#       Milliseconds between node scans per player.
+#       Default: 1000
+#
+AutoGather.ScanIntervalMs = 1000
+
+#
+#   AutoGather.AllowInCombat
+#       Allow auto-gathering while in combat.
+#       Default: 0 (disabled)
+#
+AutoGather.AllowInCombat = 0
+
+#
+#   AutoGather.AllowWhileMounted
+#       Allow auto-gathering while mounted.
+#       Default: 1 (enabled)
+#
+AutoGather.AllowWhileMounted = 1

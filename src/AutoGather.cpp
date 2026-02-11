@@ -360,6 +360,13 @@ static bool AutoSkinCreature(Player* player, Creature* creature)
     // Remove skinnable flag and mark as skinned (mirrors EffectSkinning)
     creature->RemoveUnitFlag(UNIT_FLAG_SKINNABLE);
 
+    // Signal corpse system that skinning loot has been taken so the
+    // decay timer starts (mirrors the DoLootRelease path after normal skinning).
+    creature->loot.clear();
+    creature->loot.loot_type = LOOT_SKINNING;
+    creature->RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
+    creature->AllLootRemovedFromCorpse();
+
     // Skill-up with elite bonus (mirrors SpellEffects.cpp:4912-4913)
     int32 pureSkillValue = player->GetPureSkillValue(skillId);
     if (pureSkillValue > 0)

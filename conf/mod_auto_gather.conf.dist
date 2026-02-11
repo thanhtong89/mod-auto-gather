@@ -2,6 +2,7 @@
 # mod-auto-gather configuration
 #
 # Auto-shows mining/herb nodes on minimap and auto-gathers when in range.
+# Also supports auto-skinning dead creatures that have been fully looted.
 #
 
 ###############################################################################
@@ -31,6 +32,7 @@ AutoGather.Announce = 1
 #       Force minimap tracking flags for gathering professions.
 #       Sets PLAYER_TRACK_RESOURCES bits directly, allowing multiple
 #       resource types to show simultaneously alongside other tracking.
+#       Note: Skinning has no minimap tracking spell in WotLK.
 #       Default: 1 (enabled)
 #
 AutoGather.AutoTrack = 1
@@ -41,7 +43,7 @@ AutoGather.AutoTrack = 1
 
 #
 #   AutoGather.AutoLoot
-#       Automatically gather nodes when within range.
+#       Automatically gather nodes/skin creatures when within range.
 #       Loot goes directly to bags, no loot window.
 #       Default: 1 (enabled)
 #
@@ -49,7 +51,7 @@ AutoGather.AutoLoot = 1
 
 #
 #   AutoGather.LootRange
-#       Range in yards to auto-gather nodes.
+#       Range in yards to auto-gather nodes and auto-skin creatures.
 #       Default: 10.0
 #
 AutoGather.LootRange = 10.0

@@ -4,10 +4,12 @@
  * Auto-shows mining/herb nodes on minimap for players with gathering
  * professions, and auto-gathers those nodes when within range —
  * depositing loot directly into bags with normal skill progression.
+ * Also auto-skins dead creatures that have been fully looted.
  */
 
 #include "Chat.h"
 #include "Config.h"
+#include "Creature.h"
 #include "DataMap.h"
 #include "DBCStores.h"
 #include "GridNotifiers.h"
@@ -47,6 +49,10 @@ struct AutoGatherPlayerData : public DataMap::Base
 {
     uint32 scanTimer = 0;
 };
+
+// ===========================================================================
+//  GAMEOBJECT GATHERING (Mining / Herbalism)
+// ===========================================================================
 
 // ---------------------------------------------------------------------------
 // Gatherable node check functor (for GameObjectListSearcher)
@@ -91,11 +97,7 @@ public:
             if (skillId == SKILL_NONE)
                 continue;
 
-            // Player must have the skill
-            if (_player->GetSkillValue(skillId) == 0)
-                continue;
-
-            // Player skill must meet required level
+            // Player must have the skill at the required level
             if (_player->GetSkillValue(skillId) < lockEntry->Skill[i])
                 continue;
 
@@ -138,9 +140,6 @@ static bool GetGatherInfo(GameObject* go, Player* player,
         if (skillId == SKILL_NONE)
             continue;
 
-        if (player->GetSkillValue(skillId) == 0)
-            continue;
-
         if (player->GetSkillValue(skillId) < lockEntry->Skill[i])
             continue;
 
@@ -153,35 +152,12 @@ static bool GetGatherInfo(GameObject* go, Player* player,
 }
 
 // ---------------------------------------------------------------------------
-// Core: auto-gather a single node
+// Store all items from a Loot object into a player's bags.
+// Returns false if any item cannot fit (pre-check prevents partial loot).
 // ---------------------------------------------------------------------------
 
-static bool AutoGatherNode(Player* player, GameObject* go)
+static bool AutoStoreLoot(Player* player, Loot& loot)
 {
-    // Re-validate state (could have changed since search)
-    if (!go->isSpawned() || go->getLootState() != GO_READY)
-        return false;
-
-    if (!go->IsInMap(player) || !go->InSamePhase(player))
-        return false;
-
-    SkillType skillId = SKILL_NONE;
-    uint32 reqSkill = 0;
-    if (!GetGatherInfo(go, player, skillId, reqSkill))
-        return false;
-
-    // Generate loot
-    uint32 lootId = go->GetGOInfo()->GetLootId();
-    if (!lootId)
-    {
-        // No loot template — just despawn
-        go->SetLootState(GO_JUST_DEACTIVATED);
-        return true;
-    }
-
-    Loot loot;
-    loot.FillLoot(lootId, LootTemplates_Gameobject, player, true);
-
     // Pre-check bag space for ALL items before committing
     for (auto const& li : loot.items)
     {
@@ -189,13 +165,8 @@ static bool AutoGatherNode(Player* player, GameObject* go)
             continue;
 
         ItemPosCountVec dest;
-        InventoryResult msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT,
-                                                      dest, li.itemid, li.count);
-        if (msg != EQUIP_ERR_OK)
-        {
-            // Can't fit loot — leave node intact
+        if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, li.itemid, li.count) != EQUIP_ERR_OK)
             return false;
-        }
     }
 
     for (auto const& qi : loot.quest_items)
@@ -204,9 +175,7 @@ static bool AutoGatherNode(Player* player, GameObject* go)
             continue;
 
         ItemPosCountVec dest;
-        InventoryResult msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT,
-                                                      dest, qi.itemid, qi.count);
-        if (msg != EQUIP_ERR_OK)
+        if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, qi.itemid, qi.count) != EQUIP_ERR_OK)
             return false;
     }
 
@@ -245,6 +214,41 @@ static bool AutoGatherNode(Player* player, GameObject* go)
         player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_LOOT_MONEY, loot.gold);
     }
 
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Core: auto-gather a single mining/herb node
+// ---------------------------------------------------------------------------
+
+static bool AutoGatherNode(Player* player, GameObject* go)
+{
+    // Re-validate state (could have changed since search)
+    if (!go->isSpawned() || go->getLootState() != GO_READY)
+        return false;
+
+    if (!go->IsInMap(player) || !go->InSamePhase(player))
+        return false;
+
+    SkillType skillId = SKILL_NONE;
+    uint32 reqSkill = 0;
+    if (!GetGatherInfo(go, player, skillId, reqSkill))
+        return false;
+
+    // Generate loot
+    uint32 lootId = go->GetGOInfo()->GetLootId();
+    if (!lootId)
+    {
+        go->SetLootState(GO_JUST_DEACTIVATED);
+        return true;
+    }
+
+    Loot loot;
+    loot.FillLoot(lootId, LootTemplates_Gameobject, player, true);
+
+    if (!AutoStoreLoot(player, loot))
+        return false; // Bags full — leave node intact
+
     // Skill-up (mirrors SpellEffects.cpp EffectOpenLock logic)
     if (skillId != SKILL_NONE)
     {
@@ -264,6 +268,110 @@ static bool AutoGatherNode(Player* player, GameObject* go)
 
     return true;
 }
+
+// ===========================================================================
+//  CREATURE SKINNING
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Skinnable creature check functor (for CreatureListSearcher)
+// ---------------------------------------------------------------------------
+
+class SkinnableCreatureInRange
+{
+public:
+    SkinnableCreatureInRange(Player const* player, float range)
+        : _player(player), _range(range) {}
+
+    bool operator()(Creature* creature)
+    {
+        if (!creature || creature->IsAlive())
+            return false;
+
+        if (!_player->IsWithinDist(creature, _range, false))
+            return false;
+
+        // Must have UNIT_FLAG_SKINNABLE (set after regular loot is emptied)
+        if (!creature->HasUnitFlag(UNIT_FLAG_SKINNABLE))
+            return false;
+
+        // Must have a skin loot ID
+        CreatureTemplate const* cInfo = creature->GetCreatureTemplate();
+        if (!cInfo || !cInfo->SkinLootId)
+            return false;
+
+        // Check that the player has the required skill type
+        SkillType requiredSkill = cInfo->GetRequiredLootSkill();
+        if (_player->GetSkillValue(requiredSkill) == 0)
+            return false;
+
+        // Skill level check: mirrors SpellEffects.cpp:4908 and Spell.cpp:6239
+        int32 targetLevel = creature->GetLevel();
+        int32 playerSkill = _player->GetSkillValue(requiredSkill);
+        int32 reqValue = targetLevel < 10 ? 0 : targetLevel < 20 ? (targetLevel - 10) * 10 : targetLevel * 5;
+
+        if (playerSkill < reqValue)
+            return false;
+
+        return true;
+    }
+
+private:
+    Player const* _player;
+    float _range;
+};
+
+// ---------------------------------------------------------------------------
+// Core: auto-skin a single creature
+// Mirrors EffectSkinning at SpellEffects.cpp:4889-4914
+// ---------------------------------------------------------------------------
+
+static bool AutoSkinCreature(Player* player, Creature* creature)
+{
+    // Re-validate
+    if (creature->IsAlive() || !creature->HasUnitFlag(UNIT_FLAG_SKINNABLE))
+        return false;
+
+    if (!creature->IsInMap(player) || !creature->InSamePhase(player))
+        return false;
+
+    CreatureTemplate const* cInfo = creature->GetCreatureTemplate();
+    if (!cInfo || !cInfo->SkinLootId)
+        return false;
+
+    SkillType skillId = cInfo->GetRequiredLootSkill();
+    int32 targetLevel = creature->GetLevel();
+    int32 reqValue = targetLevel < 10 ? 0 : targetLevel < 20 ? (targetLevel - 10) * 10 : targetLevel * 5;
+
+    if (player->GetSkillValue(skillId) < reqValue)
+        return false;
+
+    // Regular loot must be fully emptied first (except critters)
+    if (!creature->IsCritter() && !creature->loot.isLooted())
+        return false;
+
+    // Generate skinning loot
+    Loot loot;
+    loot.FillLoot(cInfo->SkinLootId, LootTemplates_Skinning, player, true);
+
+    if (!AutoStoreLoot(player, loot))
+        return false; // Bags full — leave corpse intact
+
+    // Remove skinnable flag and mark as skinned (mirrors EffectSkinning)
+    creature->RemoveUnitFlag(UNIT_FLAG_SKINNABLE);
+
+    // Skill-up with elite bonus (mirrors SpellEffects.cpp:4912-4913)
+    int32 pureSkillValue = player->GetPureSkillValue(skillId);
+    if (pureSkillValue > 0)
+        player->UpdateGatherSkill(skillId, pureSkillValue, reqValue,
+                                  creature->isElite() ? 2 : 1);
+
+    return true;
+}
+
+// ===========================================================================
+//  MINIMAP TRACKING
+// ===========================================================================
 
 // ---------------------------------------------------------------------------
 // Resolve tracking bit values from spell DBC data
@@ -285,9 +393,9 @@ static void ResolveTrackingBits()
              herbTrackBit, mineTrackBit);
 }
 
-// ---------------------------------------------------------------------------
-// Scripts
-// ---------------------------------------------------------------------------
+// ===========================================================================
+//  SCRIPTS
+// ===========================================================================
 
 class AutoGatherWorldScript : public WorldScript
 {
@@ -306,13 +414,10 @@ public:
         cfgAllowInCombat    = sConfigMgr->GetOption<bool>("AutoGather.AllowInCombat", false);
         cfgAllowWhileMounted = sConfigMgr->GetOption<bool>("AutoGather.AllowWhileMounted", true);
 
-        // On reload, spell data is available so we can re-resolve tracking bits
         if (reload)
             ResolveTrackingBits();
     }
 
-    // OnStartup fires after all DBC/spell data is loaded (Main.cpp),
-    // unlike OnAfterConfigLoad which fires before DBC loading (World.cpp:299 vs 412).
     void OnStartup() override
     {
         ResolveTrackingBits();
@@ -332,7 +437,7 @@ public:
 
         if (cfgAnnounce)
             ChatHandler(player->GetSession()).PSendSysMessage(
-                "|cff00ff00[Auto-Gather]|r Module active. Gathering nodes will be auto-collected.");
+                "|cff00ff00[Auto-Gather]|r Module active. Gathering nodes and skinnable creatures will be auto-collected.");
     }
 
     void OnPlayerUpdate(Player* player, uint32 p_time) override
@@ -352,11 +457,6 @@ public:
     }
 
 private:
-    static bool PlayerHasGatheringSkill(Player* player, SkillType skill)
-    {
-        return player->GetSkillValue(skill) > 0;
-    }
-
     static void DoScan(Player* player)
     {
         if (!player->IsAlive())
@@ -377,10 +477,11 @@ private:
         if (player->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING))
             return;
 
-        bool hasHerbalism = PlayerHasGatheringSkill(player, SKILL_HERBALISM);
-        bool hasMining    = PlayerHasGatheringSkill(player, SKILL_MINING);
+        bool hasHerbalism = player->GetSkillValue(SKILL_HERBALISM) > 0;
+        bool hasMining    = player->GetSkillValue(SKILL_MINING)    > 0;
+        bool hasSkinning  = player->GetSkillValue(SKILL_SKINNING)  > 0;
 
-        // --- Minimap tracking ---
+        // --- Minimap tracking (herbs & minerals only; skinning has no tracking spell) ---
         if (cfgAutoTrack)
         {
             if (hasHerbalism && herbTrackBit &&
@@ -398,25 +499,49 @@ private:
                 player->RemoveFlag(PLAYER_TRACK_RESOURCES, mineTrackBit);
         }
 
-        if (!hasHerbalism && !hasMining)
+        if (!hasHerbalism && !hasMining && !hasSkinning)
             return;
 
-        // --- Auto-loot ---
         if (!cfgAutoLoot)
             return;
 
         if (!cfgAllowWhileMounted && player->IsMounted())
             return;
 
-        std::list<GameObject*> nodes;
-        GatherableNodeInRange check(player, cfgLootRange);
-        Acore::GameObjectListSearcher<GatherableNodeInRange> searcher(player, nodes, check);
-        Cell::VisitObjects(player, searcher, cfgLootRange);
+        float range = cfgLootRange;
 
-        for (GameObject* go : nodes)
+        // --- Auto-gather mining/herb nodes ---
+        if (hasHerbalism || hasMining)
         {
-            if (AutoGatherNode(player, go))
-                break; // One node per scan cycle
+            std::list<GameObject*> nodes;
+            GatherableNodeInRange goCheck(player, range);
+            Acore::GameObjectListSearcher<GatherableNodeInRange> goSearcher(player, nodes, goCheck);
+            Cell::VisitObjects(player, goSearcher, range);
+
+            for (GameObject* go : nodes)
+            {
+                if (AutoGatherNode(player, go))
+                    break; // One node per scan cycle
+            }
+        }
+
+        // --- Auto-skin dead creatures ---
+        // Some creatures require Herbalism or Mining to skin
+        // (CREATURE_TYPE_FLAG_SKIN_WITH_HERBALISM / SKIN_WITH_MINING),
+        // so we scan whenever the player has any gathering skill.
+        // The functor checks the specific required skill per-creature.
+        if (hasSkinning || hasHerbalism || hasMining)
+        {
+            std::list<Creature*> corpses;
+            SkinnableCreatureInRange crCheck(player, range);
+            Acore::CreatureListSearcher<SkinnableCreatureInRange> crSearcher(player, corpses, crCheck);
+            Cell::VisitObjects(player, crSearcher, range);
+
+            for (Creature* creature : corpses)
+            {
+                if (AutoSkinCreature(player, creature))
+                    break; // One skin per scan cycle
+            }
         }
     }
 };

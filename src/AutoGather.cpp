@@ -171,7 +171,7 @@ static bool AutoStoreLoot(Player* player, Loot& loot)
 
     for (auto const& qi : loot.quest_items)
     {
-        if (qi.is_looted)
+        if (qi.is_looted || !player->HasQuestForItem(qi.itemid))
             continue;
 
         ItemPosCountVec dest;
@@ -196,7 +196,7 @@ static bool AutoStoreLoot(Player* player, Loot& loot)
     // Store quest items
     for (auto const& qi : loot.quest_items)
     {
-        if (qi.is_looted)
+        if (qi.is_looted || !player->HasQuestForItem(qi.itemid))
             continue;
 
         ItemPosCountVec dest;
